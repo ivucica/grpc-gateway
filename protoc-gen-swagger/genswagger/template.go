@@ -496,15 +496,22 @@ func applyTemplate(p param) (string, error) {
 // updateSwaggerDataFromComments updates a Swagger object based on a comment
 // from the proto file.
 //
-// First paragraph of a comment is used for summary. Remaining paragraphs of a
-// comment are used for description. If 'Summary' field is not present on the
-// passed swaggerObject, the summary and description are joined by \n\n.
+// First paragraph of a comment is used for summary. Remaining paragraphs of
+// a comment are used for description. If 'Summary' field is not present on
+// the passed swaggerObject, the summary and description are joined by \n\n.
 //
 // If there is a field named 'Info', its 'Summary' and 'Description' fields
-// will be updated instead.
+// will be updated instead. (JSON always gets applied directly to the passed
+// object, never to 'Info'.)
 //
 // If there is no 'Summary', the same behavior will be attempted on 'Title',
 // but only if the last character is not a period.
+//
+// To apply additional Swagger properties, one can pass valid JSON
+// in the last paragraph of the comment. The last paragraph needs to start
+// with the string 'OpenAPI: '. This JSON gets parsed and applied to
+// the passed swaggerObject directly. This lets developers easily apply
+// custom properties such as contact details, API base path, et al.
 func updateSwaggerDataFromComments(swaggerObject interface{}, comment string) error {
 	if len(comment) == 0 {
 		return nil
@@ -528,17 +535,24 @@ func updateSwaggerDataFromComments(swaggerObject interface{}, comment string) er
 		usingTitle = true
 	}
 
+	// Parse the JSON and apply it.
+	// TODO(ivucica): apply extras /after/ applying summary
+	// and description.
+	paragraphs := strings.Split(comment, "\n\n")
+	if len(paragraphs) > 0 && strings.HasPrefix(strings.TrimLeft(paragraphs[len(paragraphs)-1], " "), "OpenAPI: ") {
+		if err := json.Unmarshal([]byte(strings.TrimLeft(paragraphs[len(paragraphs)-1], " "))[len("OpenAPI: "):], swaggerObject); err != nil {
+			return fmt.Errorf("error: %s, parsing: %s", err.Error(), paragraphs[len(paragraphs)-1])
+		}
+		paragraphs = paragraphs[:len(paragraphs)-1]
+	}
+
 	// If there is a summary (or summary-equivalent), use the first
 	// paragraph as summary, and the rest as description.
 	if summaryValue.CanSet() {
-		paragraphs := strings.Split(comment, "\n\n")
-
 		summary := strings.TrimSpace(paragraphs[0])
 		description := strings.TrimSpace(strings.Join(paragraphs[1:], "\n\n"))
-		if !usingTitle || summary == "" || summary[len(summary)-1] != '.' {
-			if len(summary) > 0 {
-				summaryValue.Set(reflect.ValueOf(summary))
-			}
+		if !usingTitle || (len(summary) > 0 && summary[len(summary)-1] != '.') {
+			summaryValue.Set(reflect.ValueOf(summary))
 			if len(description) > 0 {
 				if !descriptionValue.CanSet() {
 					return fmt.Errorf("Encountered object type with a summary, but no description")
@@ -552,7 +566,7 @@ func updateSwaggerDataFromComments(swaggerObject interface{}, comment string) er
 	// There was no summary field on the swaggerObject. Try to apply the
 	// whole comment into description.
 	if descriptionValue.CanSet() {
-		descriptionValue.Set(reflect.ValueOf(comment))
+		descriptionValue.Set(reflect.ValueOf(strings.Join(paragraphs, "\n\n")))
 		return nil
 	}
 
